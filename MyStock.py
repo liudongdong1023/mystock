@@ -13,47 +13,37 @@ st.set_page_config(page_title="A股高级决策看板", layout="wide")
 # --- 核心算法：计算建议 ---
 def get_analysis(codes):
     results = []
-    # 获取全市场实时快照（一次性获取比循环获取快）
-    try:
-        all_spot = ak.stock_zh_a_spot_em()
-    except:
-        st.error("无法连接实时行情接口，请检查网络")
-        return pd.DataFrame()
-
     for code in codes:
         try:
-            # 1. 提取实时数据
-            row = all_spot[all_spot['代码'] == code].iloc[0]
-            price = float(row['最新价'])
+            # 方案：使用腾讯财经接口（对海外 IP 兼容性更好）
+            # 沪市 6 开头加 sh，深市 0/3 开头加 sz
+            symbol = f"sh{code}" if code.startswith('6') else f"sz{code}"
+            url = f"http://qt.gtimg.cn_{symbol}"
             
-            # 2. 获取历史数据计算 ATR 止损 (近20日)
-            hist = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq").tail(20)
-            # 计算波动率 (最高-最低的平均值)
-            atr = (hist['最高'] - hist['最低']).mean()
-            ma20 = hist['收盘'].mean()
+            # 增加随机 Header 模拟浏览器，防止被封
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            resp = requests.get(url, timeout=5, headers=headers)
             
-            # 3. 止损位：跌破近5日最低价或 MA20
-            support_level = min(hist['最低'].tail(5).min(), ma20)
-            stop_loss = support_level * 0.98 # 预留2%容错
-            
-            # 4. 建议逻辑
-            if price <= stop_loss:
-                status = "🔴 立即止损/减仓"
-            elif price > ma20:
-                status = "🟢 趋势走强/持股"
-            else:
-                status = "🟡 震荡磨底/观察"
-            
-            results.append({
-                "代码": code,
-                "名称": row['名称'],
-                "最新价": price,
-                "涨跌幅": f"{row['涨跌幅']}%",
-                "20日均线": round(ma20, 2),
-                "建议止损位": round(stop_loss, 2),
-                "操作状态": status
-            })
-        except:
+            if resp.status_code == 200 and 'v_s_' in resp.text:
+                data = resp.text.split('~')
+                name = data[1]
+                price = float(data[3])
+                change_pct = f"{data[5]}%"
+                
+                # 获取历史数据（Akshare 的历史数据接口目前海外访问尚可）
+                # 如果这一步卡住，说明历史接口也被封，建议先注释掉止损计算
+                hist = ak.stock_zh_a_hist(symbol=code, period="daily", adjust="qfq").tail(20)
+                ma20 = hist['收盘'].mean()
+                stop_loss = hist['最低'].tail(5).min() * 0.98
+                
+                status = "🟢 持股" if price > ma20 else "🔴 风险"
+                
+                results.append({
+                    "代码": code, "名称": name, "最新价": price, 
+                    "涨跌幅": change_pct, "建议止损位": round(stop_loss, 2), "状态": status
+                })
+        except Exception as e:
+            # st.write(f"调试：{code} 获取失败") # 仅供调试
             continue
     return pd.DataFrame(results)
 
@@ -83,3 +73,4 @@ if st.button("🚀 手动执行分析"):
 if auto_refresh:
     time.sleep(60)
     st.rerun()
+
