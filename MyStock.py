@@ -7,187 +7,200 @@ from datetime import datetime
 import os
 import re
 
-# --- 1. 页面样式配置 ---
+# --- 1. 页面配置与美化 ---
 st.set_page_config(page_title="2026 AI Quant Master", layout="wide")
 st.markdown("""
     <style>
     .stApp { background-color: #0e1117; color: #ffffff; }
-    .buy-signal { background-color: #004d00; color: #00ff00; padding: 5px; border-radius: 5px; font-weight: bold; }
-    .sell-signal { background-color: #4d0000; color: #ff4b4b; padding: 5px; border-radius: 5px; font-weight: bold; }
+    .buy-signal { color: #00ff00; font-weight: bold; }
+    .sell-signal { color: #ff4b4b; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 核心量化决策引擎 ---
-@st.cache_data(ttl=300)
-def fetch_analysis(symbol):
-    try:
-        ticker = yf.Ticker(symbol)
-        # 获取1年数据确保均线准确
-        df = ticker.history(period="1y", interval="1d", timeout=10)
-        if df.empty: return None, "Unknown"
-        
-        # 精准计算 5, 10, 20 日均线
-        df.ta.sma(length=5, append=True)
-        df.ta.sma(length=10, append=True)
-        df.ta.sma(length=20, append=True)
-        # 辅助指标
-        df.ta.rsi(length=14, append=True)
-        df.ta.atr(length=14, append=True)
-        
-        return df, ticker.info.get('shortName', symbol)
-    except:
-        return None, "Error"
+# --- 2. 核心板块与初始化列表配置 ---
+SECTORS = {
+    "AI算力/应用": ["688041.SS", "688256.SS", "002230.SZ", "603019.SS", "300033.SZ"],
+    "存储/脑机/芯片": ["603986.SS", "603160.SS", "002422.SZ", "688981.SS"],
+    "石油/化工/能源": ["601857.SS", "600028.SS", "600309.SS", "002493.SZ"],
+    "电池/电力/航天": ["002594.SZ", "600900.SS", "600118.SS", "600487.SZ"],
+    "机器人/贵金属": ["002031.SZ", "601899.SS", "600547.SS", "002155.SZ"]
+}
 
-def generate_decision(df):
-    """
-    基于 MA5/10/20 的买卖决策逻辑
-    """
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-    
-    signals = []
-    
-    # A. 金叉/死叉逻辑 (5日/10日)
-    is_gold = prev['SMA_5'] <= prev['SMA_10'] and last['SMA_5'] > last['SMA_10']
-    is_death = prev['SMA_5'] >= prev['SMA_10'] and last['SMA_5'] < last['SMA_10']
-    
-    # B. 综合决策建议
-    score = 0
-    # 站稳5日线 +1
-    if last['Close'] > last['SMA_5']: score += 1
-    # 5/10线多头排列 +1
-    if last['SMA_5'] > last['SMA_10']: score += 1
-    # 股价上行且放量 (此处简化为均线支撑)
-    if last['Close'] > last['SMA_20']: score += 1
-    
-    # 判定文字
-    if is_gold or score == 3:
-        advice = "🚀 强烈建议买入"
-        color = "#00ff00"
-    elif is_death or last['Close'] < last['SMA_10']:
-        advice = "⚠️ 建议止损/卖出"
-        color = "#ff4b4b"
-    else:
-        advice = "💎 震荡/持股观望"
-        color = "#ffa500"
-        
-    if is_gold: signals.append("✨ 5/10日金叉")
-    if is_death: signals.append("💀 5/10日死叉")
-    if last['Close'] > last['SMA_20'] and prev['Close'] <= prev['SMA_20']:
-        signals.append("突破20日生命线")
-        
-    return advice, signals, color
-
-# --- 3. 侧边栏配置 ---
-with st.sidebar:
-    st.header("🎯 决策列表配置")
-    raw_input = st.text_area("输入监控列表 (代码 | 名称)", 
-                             value="600519 | 贵州茅台
+DEFAULT_TEXT = """[AI/算力/存储]
 688041 | 海光信息
 688256 | 寒武纪
 002230 | 科大讯飞
 603019 | 中科曙光
+603986 | 兆易创新
+[机器人/脑机/医药]
 002031 | 巨轮智能
-603233 | 大博医疗
 002422 | 科伦药业
+603233 | 大博医疗
+[商业航天/光纤/通信]
 600118 | 中国卫星
 600487 | 亨通光电
 600498 | 烽火通信
-603986 | 兆易创新
-603160 | 汇顶科技
+[电池/电力/新能源]
 002594 | 比亚迪
 600900 | 长江电力
 600023 | 浙能电力
 002074 | 国轩高科
+[石油/化工/炼化]
 601857 | 中国石油
 600028 | 中国石化
 600309 | 万华化学
 002493 | 荣盛石化
+[贵金属]
 601899 | 紫金矿业
-600547 | 山东黄金")
-    target_symbols = []
+600547 | 山东黄金
+002155 | 湖南黄金
+"""
+
+# --- 3. 核心量化算法 ---
+@st.cache_data(ttl=300)
+def fetch_analysis(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period="1y", interval="1d", timeout=10)
+        if df.empty: return None, "Unknown"
+        # 均线系统 MA5, MA10, MA20
+        df.ta.sma(length=5, append=True)
+        df.ta.sma(length=10, append=True)
+        df.ta.sma(length=20, append=True)
+        # 辅助指标 RSI, ATR
+        df.ta.rsi(length=14, append=True)
+        df.ta.atr(length=14, append=True)
+        return df, ticker.info.get('shortName', symbol)
+    except:
+        return None, "Error"
+
+def get_strategy(df):
+    """均线金叉决策策略"""
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    # 5/10日金叉判断
+    is_gold = prev['SMA_5'] <= prev['SMA_10'] and last['SMA_5'] > last['SMA_10']
+    is_death = prev['SMA_5'] >= prev['SMA_10'] and last['SMA_5'] < last['SMA_10']
+    
+    score = 0
+    if last['Close'] > last['SMA_5']: score += 1
+    if last['SMA_5'] > last['SMA_10']: score += 1
+    if last['Close'] > last['SMA_20']: score += 1
+    
+    if is_gold or score == 3:
+        return "🚀 强烈买入建议", ["✨ 5/10日金叉" if is_gold else "🟢 多头趋势"], "#00ff00"
+    elif is_death or last['Close'] < last['SMA_10']:
+        return "⚠️ 减仓/止损建议", ["💀 5/10日死叉" if is_death else "🔴 趋势破位"], "#ff4b4b"
+    return "💎 持股/观望", [], "#ffa500"
+
+# --- 4. 侧边栏交互 ---
+with st.sidebar:
+    st.header("🎯 策略监控配置")
+    raw_input = st.text_area("自选股监控列表", value=DEFAULT_TEXT, height=450)
+    target_list = []
     for line in raw_input.split('\n'):
         match = re.search(r'(\d{6})', line)
         if match:
             code = match.group(1)
             name = line.split('|')[-1].strip() if '|' in line else code
             suffix = ".SS" if code.startswith('6') else ".SZ"
-            target_symbols.append((f"{code}{suffix}", code, name))
+            target_list.append((f"{code}{suffix}", code, name))
+    st.divider()
+    st.caption("2026.02.01 Cloud Native Version")
 
-# --- 4. 主界面展示 ---
-st.title("🛡️ 2026 AI 趋势决策仪表盘")
+# --- 5. 主页面渲染 ---
+st.title("🛡️ 2026 A股量化决策辅助看板")
 
-if not target_symbols:
-    st.warning("👈 请在左侧侧边栏添加监控标的")
-else:
-    # A. 实时行情与决策矩阵
-    summary_list = []
-    for sym_yf, code, user_name in target_symbols:
-        data, t_name = fetch_analysis(sym_yf)
+# --- A. 板块强弱对比雷达图 ---
+col_radar, col_info = st.columns([1.5, 1])
+with col_radar:
+    st.subheader("🌐 板块强度对比 (5日相对涨跌%)")
+    radar_data = []
+    for sector, syms in SECTORS.items():
+        rets = []
+        for s in syms:
+            d, _ = fetch_analysis(s)
+            if d is not None:
+                rets.append((d['Close'].iloc[-1] / d['Close'].iloc[-5] - 1) * 100)
+        avg_r = sum(rets) / len(rets) if rets else 0
+        radar_data.append({"板块": sector, "强度": avg_r})
+    
+    df_radar = pd.DataFrame(radar_data)
+    fig_radar = go.Figure(data=go.Scatterpolar(
+        r=df_radar['强度'], theta=df_radar['板块'], fill='toself', line_color='#00ff00'
+    ))
+    fig_radar.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[-8, 8]), bgcolor="#161b22"), 
+        template="plotly_dark", height=380, margin=dict(l=60, r=60, t=20, b=20)
+    )
+    st.plotly_chart(fig_radar, use_container_width=True)
+
+with col_info:
+    st.markdown("""
+    **📈 操盘指引：**
+    1. **雷达图扩张**：代表该行业处于资金风口，可重点选股。
+    2. **均线交叉**：MA5 上穿 MA10 是趋势由弱转强的核心信号。
+    3. **离场点位**：系统自动计算 **2xATR 止损位**，破位须坚决执行。
+    4. **数据更新**：yfinance 接口 A 股约有 15 分钟延迟。
+    """)
+
+st.divider()
+
+# --- B. 实时监控看板 ---
+if target_list:
+    summary = []
+    for syf, code, name in target_list:
+        data, _ = fetch_analysis(syf)
         if data is not None:
-            advice, signals, color = generate_decision(data)
+            adv, sigs, _ = get_strategy(data)
             last = data.iloc[-1]
             prev = data.iloc[-2]
-            change = (last['Close'] / prev['Close'] - 1) * 100
-            
-            summary_list.append({
-                "代码": code,
-                "名称": user_name,
-                "价格": round(last['Close'], 2),
-                "涨幅": f"{change:+.2f}%",
-                "MA5": round(last['SMA_5'], 2),
-                "MA10": round(last['SMA_10'], 2),
-                "MA20": round(last['SMA_20'], 2),
-                "信号预警": " | ".join(signals) if signals else "趋势稳定",
-                "决策建议": advice
+            chg = (last['Close'] / prev['Close'] - 1) * 100
+            summary.append({
+                "代码": code, "名称": name, "价格": round(last['Close'], 2), "涨幅": f"{chg:+.2f}%",
+                "MA5": round(last['SMA_5'], 2), "MA10": round(last['SMA_10'], 2), "MA20": round(last['SMA_20'], 2),
+                "综合建议": adv
             })
     
-    if summary_list:
-        st.subheader("🏁 实时扫描：金叉预警与买卖建议")
-        df_summary = pd.DataFrame(summary_list)
-        
-        def style_advice(val):
-            if '买入' in val: return 'color: #00ff00; font-weight: bold'
-            if '卖出' in val or '止损' in val: return 'color: #ff4b4b; font-weight: bold'
-            return 'color: #ffa500'
+    st.subheader("🏁 全量扫描：买卖信号实时列表")
+    df_res = pd.DataFrame(summary)
+    
+    def style_adv(val):
+        if '买入' in val: return 'color: #00ff00; font-weight: bold'
+        if '止损' in val: return 'color: #ff4b4b; font-weight: bold'
+        return 'color: #ffa500'
+    
+    st.dataframe(df_res.style.applymap(style_adv, subset=['综合建议']), use_container_width=True, hide_index=True)
 
-        st.dataframe(df_summary.style.applymap(style_advice, subset=['决策建议']), 
-                     use_container_width=True, hide_index=True)
-
+    # --- C. 深度个股技术透视 ---
     st.divider()
-
-    # B. 单股深度图形分析
-    target_sel = st.selectbox("🎯 重点个股 5/10/20 趋势分析", target_symbols, format_func=lambda x: f"{x} ({x})")
+    target_sel = st.selectbox("🎯 选择标的查看深度 5/10/20 趋势形态", target_list, format_func=lambda x: f"{x} ({x})")
     df_t, _ = fetch_analysis(target_sel)
     
     if df_t is not None:
-        col1, col2 = st.columns()
-        with col1:
-            fig = go.Figure()
-            fig.add_trace(go.Candlestick(x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'], name='K线'))
-            # 绘制你要求的均线指标
-            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['SMA_5'], name='5日线', line=dict(color='white', width=1)))
-            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['SMA_10'], name='10日线', line=dict(color='yellow', width=1)))
-            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['SMA_20'], name='20日线', line=dict(color='orange', width=1.5)))
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            fig_k = go.Figure(data=[go.Candlestick(
+                x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'], name='K线'
+            )])
+            # 添加你要求的 5, 10, 20 日线
+            for m, col in zip(['SMA_5', 'SMA_10', 'SMA_20'], ['white', 'yellow', 'orange']):
+                fig_k.add_trace(go.Scatter(x=df_t.index, y=df_t[m], name=m, line=dict(color=col, width=1.5)))
             
-            fig.update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            advice, signals, color = generate_decision(df_t)
-            st.markdown(f"### 操作决策：<span style='color:{color}'>{advice}</span>", unsafe_allow_html=True)
-            st.write("---")
-            st.write("**技术面信号：**")
-            for s in signals:
-                st.write(f"- {s}")
-            
-            last_t = df_t.iloc[-1]
-            st.write(f"- 最新成交: ¥{last_t['Close']:.2f}")
-            st.write(f"- RSI(14)强度: {last_t['RSI_14']:.1f}")
+            fig_k.update_layout(template="plotly_dark", height=550, xaxis_rangeslider_visible=False, margin=dict(l=0,r=0,b=0,t=0))
+            st.plotly_chart(fig_k, use_container_width=True)
+        
+        with c2:
+            adv, sigs, col = get_strategy(df_t)
+            st.markdown(f"### 核心决策建议：<span style='color:{col}'>{adv}</span>", unsafe_allow_html=True)
+            for s in sigs:
+                st.write(f"🔹 {s}")
             
             st.divider()
-            # 动态止损计算
-            st.metric("实战离场参考 (2xATR)", f"¥{last_t['Close'] - 2*last_t['ATRr_14']:.2f}", help="价格跌破此线建议无条件减仓。")
+            last_p = df_t['Close'].iloc[-1]
+            atr_val = df_t['ATRr_14'].iloc[-1]
+            st.metric("动态风控离场位 (2xATR)", f"￥{last_p - 2*atr_val:.2f}", delta="-2.0 ATR")
+            st.caption("注：ATR 止损位能有效过滤盘中震荡，保护利润。")
 
-st.info("💡 提示：本工具使用 yfinance 接口。'5/10日金叉' 是技术面确认转强的典型标志。")
-
+st.caption(f"数据实时更新：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 基于 yfinance 接口协议")
