@@ -17,7 +17,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 初始数据配置 (涵盖 11 大板块主板龙头) ---
+# --- 2. 初始数据配置 (涵盖 15 大热门板块主板龙头) ---
 DEFAULT_MONITOR = """[AI算力与芯片]
 603019 | 中科曙光
 603986 | 兆易创新
@@ -76,7 +76,7 @@ def fetch_analysis(symbol):
         ticker = yf.Ticker(symbol)
         df = ticker.history(period="1y", interval="1d", timeout=10)
         if df.empty: return None
-        # 计算 5, 10, 20 日均线
+        # 计算 MA5, MA10, MA20
         df.ta.sma(length=5, append=True)
         df.ta.sma(length=10, append=True)
         df.ta.sma(length=20, append=True)
@@ -89,7 +89,6 @@ def fetch_analysis(symbol):
 def get_decision(df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
-    # 金叉逻辑
     is_gold = prev['SMA_5'] <= prev['SMA_10'] and last['SMA_5'] > last['SMA_10']
     is_death = prev['SMA_5'] >= prev['SMA_10'] and last['SMA_5'] < last['SMA_10']
     
@@ -104,18 +103,16 @@ def get_decision(df):
         return "⚠️ 建议止损", "#ff4b4b", "💀5/10日死叉" if is_death else "趋势破位"
     return "💎 持股观望", "#ffa500", "震荡整理"
 
-# --- 4. 侧边栏：解析分门别类的数据 ---
+# --- 4. 侧边栏：修复后的解析逻辑 ---
 with st.sidebar:
     st.header("🎯 策略监控池")
     raw_input = st.text_area("监控列表 (支持 [板块] 标记)", value=DEFAULT_MONITOR, height=400)
     
-    # 解析逻辑：按板块切分
     sector_dict = {}
     current_sector = "默认观察"
     for line in raw_input.split('\n'):
         line = line.strip()
         if not line: continue
-        # 识别 [板块]
         if line.startswith('[') and line.endswith(']'):
             current_sector = line[1:-1]
             sector_dict[current_sector] = []
@@ -129,12 +126,11 @@ with st.sidebar:
                 sector_dict[current_sector].append({"yf": f"{code}{suffix}", "code": code, "name": name})
 
 # --- 5. 主页面：Tab 标签页展示 ---
-st.title("🛡️ 2026 AI 趋势决策仪表盘 (分类版)")
+st.title("🛡️ 2026 AI 趋势决策仪表盘")
 
 if not sector_dict:
     st.warning("👈 请在左侧配置监控列表")
 else:
-    # 动态创建 Tab
     tabs = st.tabs(list(sector_dict.keys()))
     
     for i, (sector_name, stocks) in enumerate(sector_dict.items()):
@@ -146,7 +142,8 @@ else:
                 if df is not None:
                     adv, color, sig = get_decision(df)
                     last = df.iloc[-1]
-                    chg = (last['Close']/df.iloc[-2]['Close']-1)*100
+                    prev_close = df.iloc[-2]['Close']
+                    chg = (last['Close'] / prev_close - 1) * 100
                     summary.append({
                         "名称": s['name'], "代码": s['code'], 
                         "价格": round(last['Close'], 2), "涨幅": f"{chg:+.2f}%",
@@ -156,16 +153,13 @@ else:
             
             if summary:
                 res_df = pd.DataFrame(summary)
-                def style_adv(val):
-                    if '买入' in val: return 'color: #00ff00; font-weight: bold'
-                    if '止损' in val: return 'color: #ff4b4b; font-weight: bold'
-                    return 'color: #ffa500'
-                st.dataframe(res_df.style.applymap(style_adv, subset=['决策']), use_container_width=True, hide_index=True)
+                st.dataframe(res_df.style.applymap(lambda v: 'color: #00ff00; font-weight: bold' if '买入' in str(v) else ('color: #ff4b4b; font-weight: bold' if '止损' in str(v) else 'color: #ffa500'), subset=['决策']), use_container_width=True, hide_index=True)
                 
-                # 下方增加该板块的详情选择
-                target = st.selectbox(f"🎯 穿透分析 ({sector_name})", [f"{x['code']} | {x['name']}" for x in stocks], key=f"sel_{i}")
-                t_code = target.split(' | ')
-                t_yf = f"{t_code}.SS" if t_code.startswith('6') else f"{t_code}.SZ"
+                # --- 修复位置：确保获取的是字符串代码 ---
+                target_label = st.selectbox(f"🎯 穿透分析 ({sector_name})", [f"{x['code']} | {x['name']}" for x in stocks], key=f"sel_{i}")
+                t_code_val = target_label.split(' | ')[0]  # 明确获取 6 位字符串代码
+                
+                t_yf = f"{t_code_val}.SS" if t_code_val.startswith('6') else f"{t_code_val}.SZ"
                 df_t = fetch_analysis(t_yf)
                 
                 if df_t is not None:
@@ -173,8 +167,8 @@ else:
                     with col_k:
                         fig = go.Figure(data=[go.Candlestick(x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'], name='K线')])
                         for m, c in zip(['SMA_5', 'SMA_10', 'SMA_20'], ['white', 'yellow', 'orange']):
-                            fig.add_trace(go.Scatter(x=df_t.index, y=df_t[m], name=m, line=dict(color=c, width=1)))
-                        fig.update_layout(template="plotly_dark", height=400, xaxis_rangeslider_visible=False, margin=dict(l=0,r=0,b=0,t=0))
+                            fig.add_trace(go.Scatter(x=df_t.index, y=df_t[m], name=m, line=dict(color=c, width=1.5)))
+                        fig.update_layout(template="plotly_dark", height=450, xaxis_rangeslider_visible=False, margin=dict(l=0,r=0,b=0,t=0))
                         st.plotly_chart(fig, use_container_width=True)
                     with col_d:
                         adv, color, sig = get_decision(df_t)
@@ -182,6 +176,6 @@ else:
                         st.divider()
                         last_p = df_t['Close'].iloc[-1]
                         atr = df_t['ATRr_14'].iloc[-1]
-                        st.metric("动态止损(2xATR)", f"￥{last_p - 2*atr:.2f}")
+                        st.metric("动态离场(2xATR)", f"￥{last_p - 2*atr:.2f}", help="收盘跌破此线建议离场")
 
 st.caption(f"数据更新：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 基于 yfinance 接口")
