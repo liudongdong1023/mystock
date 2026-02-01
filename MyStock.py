@@ -14,26 +14,24 @@ st.markdown("""
     .stApp { background-color: #0e1117; color: #ffffff; }
     .buy-signal { background-color: #004d00; color: #00ff00; padding: 5px; border-radius: 5px; font-weight: bold; }
     .sell-signal { background-color: #4d0000; color: #ff4b4b; padding: 5px; border-radius: 5px; font-weight: bold; }
-    .metric-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
     </style>
     """, unsafe_allow_html=True)
 
 # --- 2. 核心量化决策引擎 ---
 @st.cache_data(ttl=300)
-def fetch_stock_analysis(symbol):
+def fetch_analysis(symbol):
     try:
         ticker = yf.Ticker(symbol)
+        # 获取1年数据确保均线准确
         df = ticker.history(period="1y", interval="1d", timeout=10)
         if df.empty: return None, "Unknown"
         
-        # 计算均线系统
+        # 精准计算 5, 10, 20 日均线
         df.ta.sma(length=5, append=True)
         df.ta.sma(length=10, append=True)
         df.ta.sma(length=20, append=True)
-        df.ta.ema(length=60, append=True)
-        # 计算动量与风险
+        # 辅助指标
         df.ta.rsi(length=14, append=True)
-        df.ta.macd(append=True)
         df.ta.atr(length=14, append=True)
         
         return df, ticker.info.get('shortName', symbol)
@@ -42,49 +40,49 @@ def fetch_stock_analysis(symbol):
 
 def generate_decision(df):
     """
-    三级决策逻辑：基于均线、RSI、MACD
+    基于 MA5/10/20 的买卖决策逻辑
     """
     last = df.iloc[-1]
     prev = df.iloc[-2]
     
     signals = []
-    advice = "观望"
-    color = "white"
     
-    # 1. 均线金叉逻辑 (5日/10日)
+    # A. 金叉/死叉逻辑 (5日/10日)
     is_gold = prev['SMA_5'] <= prev['SMA_10'] and last['SMA_5'] > last['SMA_10']
     is_death = prev['SMA_5'] >= prev['SMA_10'] and last['SMA_5'] < last['SMA_10']
     
-    if is_gold:
-        signals.append("✨ 形成5/10日金叉")
-    elif is_death:
-        signals.append("💀 形成5/10日死叉")
-    
-    # 2. 综合评分建议
+    # B. 综合决策建议
     score = 0
+    # 站稳5日线 +1
     if last['Close'] > last['SMA_5']: score += 1
+    # 5/10线多头排列 +1
     if last['SMA_5'] > last['SMA_10']: score += 1
-    if last['MACDh_12_26_9'] > 0: score += 1
-    if last['RSI_14'] < 30: score += 2 # 超卖加分
+    # 股价上行且放量 (此处简化为均线支撑)
+    if last['Close'] > last['SMA_20']: score += 1
     
-    if is_gold or score >= 3:
-        advice = "🚀 强烈建议买入/持股"
+    # 判定文字
+    if is_gold or score == 3:
+        advice = "🚀 强烈建议买入"
         color = "#00ff00"
-    elif is_death or score <= 0:
-        advice = "⚠️ 建议止损/清仓"
+    elif is_death or last['Close'] < last['SMA_10']:
+        advice = "⚠️ 建议止损/卖出"
         color = "#ff4b4b"
-    elif last['RSI_14'] > 75:
-        advice = "🔥 严重超买，建议减仓"
-        color = "#ffa500"
     else:
-        advice = "💎 震荡格局，持币观望"
+        advice = "💎 震荡/持股观望"
+        color = "#ffa500"
+        
+    if is_gold: signals.append("✨ 5/10日金叉")
+    if is_death: signals.append("💀 5/10日死叉")
+    if last['Close'] > last['SMA_20'] and prev['Close'] <= prev['SMA_20']:
+        signals.append("突破20日生命线")
         
     return advice, signals, color
 
-# --- 3. 侧边栏交互 ---
+# --- 3. 侧边栏配置 ---
 with st.sidebar:
-    st.header("🎯 智能监控配置")
-    raw_input = st.text_area("输入监控列表 (002657 | 中科金财)", value="002657 | 中科金财\n688256 | 寒武纪\n300750 | 宁德时代\n600519 | 贵州茅台")
+    st.header("🎯 决策列表配置")
+    raw_input = st.text_area("输入监控列表 (代码 | 名称)", 
+                             value="002657 | 中科金财\n688256 | 寒武纪\n300750 | 宁德时代\n600519 | 贵州茅台")
     target_symbols = []
     for line in raw_input.split('\n'):
         match = re.search(r'(\d{6})', line)
@@ -94,16 +92,16 @@ with st.sidebar:
             suffix = ".SS" if code.startswith('6') else ".SZ"
             target_symbols.append((f"{code}{suffix}", code, name))
 
-# --- 4. 主页面展示 ---
-st.title("🛡️ 2026 AI 智能买卖辅助系统")
+# --- 4. 主界面展示 ---
+st.title("🛡️ 2026 AI 趋势决策仪表盘")
 
 if not target_symbols:
-    st.warning("👈 请在侧边栏输入股票代码")
+    st.warning("👈 请在左侧侧边栏添加监控标的")
 else:
-    # A. 实时决策矩阵
+    # A. 实时行情与决策矩阵
     summary_list = []
     for sym_yf, code, user_name in target_symbols:
-        data, t_name = fetch_stock_analysis(sym_yf)
+        data, t_name = fetch_analysis(sym_yf)
         if data is not None:
             advice, signals, color = generate_decision(data)
             last = data.iloc[-1]
@@ -113,58 +111,60 @@ else:
             summary_list.append({
                 "代码": code,
                 "名称": user_name,
-                "最新价": round(last['Close'], 2),
-                "今日涨跌": f"{change:+.2f}%",
-                "均线状态": " | ".join(signals) if signals else "趋势延续",
+                "价格": round(last['Close'], 2),
+                "涨幅": f"{change:+.2f}%",
+                "MA5": round(last['SMA_5'], 2),
+                "MA10": round(last['SMA_10'], 2),
+                "MA20": round(last['SMA_20'], 2),
+                "信号预警": " | ".join(signals) if signals else "趋势稳定",
                 "决策建议": advice
             })
     
     if summary_list:
-        st.subheader("🚩 实时金叉预警与决策快照")
+        st.subheader("🏁 实时扫描：金叉预警与买卖建议")
         df_summary = pd.DataFrame(summary_list)
         
-        def style_decision(val):
+        def style_advice(val):
             if '买入' in val: return 'color: #00ff00; font-weight: bold'
             if '卖出' in val or '止损' in val: return 'color: #ff4b4b; font-weight: bold'
             return 'color: #ffa500'
 
-        st.dataframe(df_summary.style.applymap(style_decision, subset=['决策建议']), 
+        st.dataframe(df_summary.style.applymap(style_advice, subset=['决策建议']), 
                      use_container_width=True, hide_index=True)
 
     st.divider()
 
-    # B. 深度图形化穿透
-    target_tuple = st.selectbox("🎯 重点个股技术形态透视", target_symbols, format_func=lambda x: f"{x} ({x})")
-    df_t, _ = fetch_stock_analysis(target_tuple)
+    # B. 单股深度图形分析
+    target_sel = st.selectbox("🎯 重点个股 5/10/20 趋势分析", target_symbols, format_func=lambda x: f"{x} ({x})")
+    df_t, _ = fetch_analysis(target_sel)
     
     if df_t is not None:
         col1, col2 = st.columns()
         with col1:
             fig = go.Figure()
             fig.add_trace(go.Candlestick(x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'], name='K线'))
-            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['SMA_5'], name='MA5', line=dict(color='white', width=1)))
-            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['SMA_10'], name='MA10', line=dict(color='yellow', width=1)))
-            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['EMA_60'], name='生命线', line=dict(color='magenta', width=2, dash='dot')))
+            # 绘制你要求的均线指标
+            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['SMA_5'], name='5日线', line=dict(color='white', width=1)))
+            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['SMA_10'], name='10日线', line=dict(color='yellow', width=1)))
+            fig.add_trace(go.Scatter(x=df_t.index, y=df_t['SMA_20'], name='20日线', line=dict(color='orange', width=1.5)))
+            
             fig.update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
             advice, signals, color = generate_decision(df_t)
-            st.markdown(f"### 核心决策：<span style='color:{color}'>{advice}</span>", unsafe_allow_html=True)
-            
+            st.markdown(f"### 操作决策：<span style='color:{color}'>{advice}</span>", unsafe_allow_html=True)
             st.write("---")
-            st.write("**技术面因子：**")
+            st.write("**技术面信号：**")
             for s in signals:
                 st.write(f"- {s}")
             
             last_t = df_t.iloc[-1]
-            st.write(f"- 当前价格: ¥{last_t['Close']:.2f}")
-            st.write(f"- 5日均线: ¥{last_t['SMA_5']:.2f}")
-            st.write(f"- RSI(14): {last_t['RSI_14']:.1f}")
+            st.write(f"- 最新成交: ¥{last_t['Close']:.2f}")
+            st.write(f"- RSI(14)强度: {last_t['RSI_14']:.1f}")
             
             st.divider()
-            # 动态止损位
-            st.metric("动态离场参考 (2xATR)", f"¥{last_t['Close'] - 2*last_t['ATRr_14']:.2f}", help="如果收盘价跌破此线，必须离场。")
-            st.caption("注：本系统建议基于技术面，请结合基本面操作。")
+            # 动态止损计算
+            st.metric("实战离场参考 (2xATR)", f"¥{last_t['Close'] - 2*last_t['ATRr_14']:.2f}", help="价格跌破此线建议无条件减仓。")
 
-st.info("💡 提示：'刚形成金叉' 指今日收盘均线完成穿越，是极强的转势信号。")
+st.info("💡 提示：本工具使用 yfinance 接口。'5/10日金叉' 是技术面确认转强的典型标志。")
